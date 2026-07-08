@@ -41,4 +41,5 @@ xt/mmap_leak.t
 xt/persistence_roundtrip.t
 xt/stress.t
 xt/truncation.t
+xt/tsan.t
 xt/valgrind.t
