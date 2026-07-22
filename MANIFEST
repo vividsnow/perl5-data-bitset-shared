@@ -24,6 +24,7 @@ t/pod_synopsis.t
 t/version_check.t
 xt/abi_skew.t
 xt/asan.t
+xt/class_pv_magic.t
 xt/cloexec.t
 xt/cloexec_exec.t
 xt/concurrent_open.t

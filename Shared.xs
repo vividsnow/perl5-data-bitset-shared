@@ -38,6 +38,11 @@ new(class, path, capacity, ...)
     const char *p = (SvGETMAGIC(path), SvOK(path)) ? SvPV_nolen(path) : NULL;
     BsHandle *h = bs_create(p, capacity, mode, errbuf);
     if (!h) croak("Data::BitSet::Shared->new: %s", errbuf);
+    /* Re-read the class PV at the point of use: xsubpp captured it in INPUT,
+     * before the argument magic above ran, and that magic can realloc/free
+     * the PV, leaving MAKE_OBJ to bless into a stale (or reused) buffer.
+     * SvPV_nolen, not SvPV_nomg: an overloaded class must re-stringify. */
+    class = SvPV_nolen(ST(0));
     MAKE_OBJ(class, h);
   OUTPUT:
     RETVAL
@@ -56,6 +61,10 @@ new_memfd(class, name, capacity)
     const char *nm = (SvGETMAGIC(name), SvOK(name)) ? SvPV_nolen(name) : NULL;
     BsHandle *h = bs_create_memfd(nm, capacity, errbuf);
     if (!h) croak("Data::BitSet::Shared->new_memfd: %s", errbuf);
+    /* Re-read the class PV at the point of use (see new() above): capacity's
+     * INPUT conversion and the name magic both ran after xsubpp captured
+     * class. */
+    class = SvPV_nolen(ST(0));
     MAKE_OBJ(class, h);
   OUTPUT:
     RETVAL
@@ -69,6 +78,9 @@ new_from_fd(class, fd)
   CODE:
     BsHandle *h = bs_open_fd(fd, errbuf);
     if (!h) croak("Data::BitSet::Shared->new_from_fd: %s", errbuf);
+    /* Re-read the class PV at the point of use (see new() above): fd's INPUT
+     * conversion ran get-magic after xsubpp captured class. */
+    class = SvPV_nolen(ST(0));
     MAKE_OBJ(class, h);
   OUTPUT:
     RETVAL
