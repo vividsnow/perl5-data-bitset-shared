@@ -10,7 +10,26 @@
         croak("Expected a Data::BitSet::Shared object"); \
     BsHandle *h = INT2PTR(BsHandle*, SvIV(SvRV(sv))); \
     if (!h) croak("Attempted to use a destroyed Data::BitSet::Shared object"); \
+    BsHandle *h0 = h; PERL_UNUSED_VAR(h0); \
     sv_2mortal(SvREFCNT_inc(SvRV(sv)))
+
+/* Re-read the handle after a call that can run Perl code. EXTRACT_BS's
+ * sv_2mortal(SvREFCNT_inc(...)) pin only blocks REFCOUNT-driven destruction;
+ * an explicit $obj->DESTROY frees the handle regardless and zeroes the IV.
+ * sv_isobject/sv_derived_from both BEGIN with SvGETMAGIC, so a tied argument
+ * runs Perl there. The same Perl can also REPLACE the invocant ($obj = 42
+ * mutates ST(0), because Perl passes aliases), hence the SvROK re-check.
+ * Used only where magic can actually intervene between EXTRACT_BS and the
+ * first use of h: every index/value argument here is a plain typemap UV,
+ * which xsubpp converts in INPUT, before PREINIT's EXTRACT_BS runs -- so no
+ * current instance method has that window. Kept for parity with the rest of
+ * the family and ready for any future method (bulk/array or dual-object)
+ * that manually converts an SV after extracting the handle. */
+#define REEXTRACT_BS(sv) \
+    if (!SvROK(sv)) \
+        croak("Data::BitSet::Shared object was replaced during the call"); \
+    h = INT2PTR(BsHandle*, SvIV(SvRV(sv))); \
+    if (h != h0) croak("Data::BitSet::Shared object replaced or destroyed during the call")
 
 #define MAKE_OBJ(class, handle) \
     SV *obj = newSViv(PTR2IV(handle)); \

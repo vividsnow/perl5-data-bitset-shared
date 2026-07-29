@@ -29,6 +29,7 @@ xt/cloexec.t
 xt/cloexec_exec.t
 xt/concurrent_open.t
 xt/cross_module_fd.t
+xt/destroy_during_call.t
 xt/eg_runs.t
 xt/fd_leak.t
 xt/fd_validation.t
