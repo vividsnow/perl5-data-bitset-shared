@@ -104,6 +104,27 @@ new_from_fd(class, fd)
   OUTPUT:
     RETVAL
 
+SV *
+new_readonly(class, path)
+    const char *class
+    SV *path
+  PREINIT:
+    char errbuf[BS_ERR_BUFLEN];
+  CODE:
+    /* Open a FROZEN (sealed) file read-only: O_RDONLY + PROT_READ, lock-free.
+       Requires ->freeze on the producer; a non-frozen file is refused. */
+    const char *p = (SvGETMAGIC(path), SvOK(path)) ? SvPV_nolen(path) : NULL;
+    if (!p) croak("Data::BitSet::Shared->new_readonly: path is required");
+    BsHandle *h = bs_open_readonly(p, errbuf);
+    if (!h) croak("Data::BitSet::Shared->new_readonly: %s", errbuf);
+    /* Re-read the class PV at the point of use (see new() above): path's
+     * get-magic above could have run Perl code that reallocs/frees it.
+     * BitSet has no REREAD_CLASS macro -- inlined here as elsewhere in this file. */
+    class = SvPV_nolen(ST(0));
+    MAKE_OBJ(class, h);
+  OUTPUT:
+    RETVAL
+
 void
 DESTROY(self)
     SV *self
@@ -133,7 +154,14 @@ set(self, bit)
   PREINIT:
     EXTRACT_BS(self);
   CODE:
+    if (h->readonly) croak("Data::BitSet::Shared->set: bitset is frozen (read-only)");
     CHECK_BIT(h, bit);
+    /* Re-check the live shared header immediately before the CAS: BitSet has no
+     * rwlock to serialize against a PEER process calling ->freeze between our
+     * readonly check and this write, so this atomic load is the closest
+     * available analog to the rest of the family's post-wrlock sealed re-check. */
+    if (__atomic_load_n(&h->hdr->sealed, __ATOMIC_ACQUIRE))
+        croak("Data::BitSet::Shared->set: bitset is frozen (read-only)");
     RETVAL = bs_set(h, bit);
   OUTPUT:
     RETVAL
@@ -145,7 +173,10 @@ clear(self, bit)
   PREINIT:
     EXTRACT_BS(self);
   CODE:
+    if (h->readonly) croak("Data::BitSet::Shared->clear: bitset is frozen (read-only)");
     CHECK_BIT(h, bit);
+    if (__atomic_load_n(&h->hdr->sealed, __ATOMIC_ACQUIRE))
+        croak("Data::BitSet::Shared->clear: bitset is frozen (read-only)");
     RETVAL = bs_clear(h, bit);
   OUTPUT:
     RETVAL
@@ -157,7 +188,10 @@ toggle(self, bit)
   PREINIT:
     EXTRACT_BS(self);
   CODE:
+    if (h->readonly) croak("Data::BitSet::Shared->toggle: bitset is frozen (read-only)");
     CHECK_BIT(h, bit);
+    if (__atomic_load_n(&h->hdr->sealed, __ATOMIC_ACQUIRE))
+        croak("Data::BitSet::Shared->toggle: bitset is frozen (read-only)");
     RETVAL = bs_toggle(h, bit);
   OUTPUT:
     RETVAL
@@ -208,6 +242,9 @@ fill(self)
   PREINIT:
     EXTRACT_BS(self);
   CODE:
+    if (h->readonly) croak("Data::BitSet::Shared->fill: bitset is frozen (read-only)");
+    if (__atomic_load_n(&h->hdr->sealed, __ATOMIC_ACQUIRE))
+        croak("Data::BitSet::Shared->fill: bitset is frozen (read-only)");
     bs_fill(h);
 
 void
@@ -216,7 +253,40 @@ zero(self)
   PREINIT:
     EXTRACT_BS(self);
   CODE:
+    if (h->readonly) croak("Data::BitSet::Shared->zero: bitset is frozen (read-only)");
+    if (__atomic_load_n(&h->hdr->sealed, __ATOMIC_ACQUIRE))
+        croak("Data::BitSet::Shared->zero: bitset is frozen (read-only)");
     bs_zero(h);
+
+void
+freeze(self)
+    SV *self
+  PREINIT:
+    EXTRACT_BS(self);
+  CODE:
+    if (h->readonly) croak("Data::BitSet::Shared->freeze: cannot freeze a read-only handle");
+    if (bs_freeze(h) != 0) croak("Data::BitSet::Shared->freeze: msync: %s", strerror(errno));
+    h->readonly = 1;   /* this handle now rejects mutation too (the file is sealed) */
+
+UV
+frozen(self)
+    SV *self
+  PREINIT:
+    EXTRACT_BS(self);
+  CODE:
+    RETVAL = __atomic_load_n(&h->hdr->sealed, __ATOMIC_ACQUIRE) ? 1 : 0;
+  OUTPUT:
+    RETVAL
+
+UV
+readonly(self)
+    SV *self
+  PREINIT:
+    EXTRACT_BS(self);
+  CODE:
+    RETVAL = h->readonly ? 1 : 0;
+  OUTPUT:
+    RETVAL
 
 SV *
 first_set(self)
@@ -266,7 +336,7 @@ sync(self)
   PREINIT:
     EXTRACT_BS(self);
   CODE:
-    if (bs_msync(h) != 0) croak("msync: %s", strerror(errno));
+    if (!h->readonly && bs_msync(h) != 0) croak("msync: %s", strerror(errno));
 
 void
 unlink(self_or_class, ...)
@@ -297,6 +367,8 @@ stats(self)
     hv_store(hv, "clears", 6, newSVuv((UV)__atomic_load_n(&h->hdr->stat_clears, __ATOMIC_RELAXED)), 0);
     hv_store(hv, "toggles", 7, newSVuv((UV)__atomic_load_n(&h->hdr->stat_toggles, __ATOMIC_RELAXED)), 0);
     hv_store(hv, "mmap_size", 9, newSVuv((UV)h->mmap_size), 0);
+    hv_store(hv, "frozen", 6, newSVuv(__atomic_load_n(&h->hdr->sealed, __ATOMIC_ACQUIRE) ? 1 : 0), 0);
+    hv_store(hv, "readonly", 8, newSVuv(h->readonly ? 1 : 0), 0);
     RETVAL = newRV_noinc((SV *)hv);
   OUTPUT:
     RETVAL

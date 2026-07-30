@@ -39,7 +39,8 @@ typedef struct {
     uint64_t stat_sets;        /* 64 */
     uint64_t stat_clears;      /* 72 */
     uint64_t stat_toggles;     /* 80 */
-    uint8_t  _pad1[40];        /* 88-127 */
+    uint8_t  sealed;           /* 88: 0 = mutable, 1 = frozen (read-only; lock-free reads) */
+    uint8_t  _pad1[39];        /* 89-127 */
 } BsHeader;
 
 #if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L
@@ -52,6 +53,8 @@ typedef struct {
     size_t    mmap_size;
     char     *path;
     int       backing_fd;
+    int       readonly;   /* 1 = frozen O_RDONLY/PROT_READ view. Bit ops are already
+                            * lock-free CAS/atomics; this only gates mutation. */
 } BsHandle;
 
 /* Max words the current mapping can physically hold -- derived from the
@@ -292,6 +295,10 @@ static BsHandle *bs_create(const char *path, uint64_t capacity, mode_t mode, cha
             if (!bs_validate_header((BsHeader *)base, (uint64_t)st.st_size)) {
                 BS_ERR("invalid bitset file"); munmap(base, map_size); flock(fd, LOCK_UN); close(fd); return NULL;
             }
+            if (((BsHeader *)base)->sealed) {
+                BS_ERR("%s is frozen (read-only); open it with new_readonly", path);
+                munmap(base, map_size); flock(fd, LOCK_UN); close(fd); return NULL;
+            }
             flock(fd, LOCK_UN); close(fd);
             return bs_setup(base, map_size, path, -1);
         }
@@ -328,6 +335,10 @@ static BsHandle *bs_open_fd(int fd, char *errbuf) {
     if (!bs_validate_header((BsHeader *)base, (uint64_t)st.st_size)) {
         BS_ERR("invalid bitset"); munmap(base, ms); return NULL;
     }
+    if (((BsHeader *)base)->sealed) {
+        BS_ERR("this bitset is frozen (read-only); open it with new_readonly");
+        munmap(base, ms); return NULL;
+    }
     int myfd = fcntl(fd, F_DUPFD_CLOEXEC, 0);
     if (myfd < 0) { BS_ERR("fcntl: %s", strerror(errno)); munmap(base, ms); return NULL; }
     return bs_setup(base, ms, NULL, myfd);
@@ -342,5 +353,46 @@ static void bs_destroy(BsHandle *h) {
 }
 
 static int bs_msync(BsHandle *h) { return msync(h->hdr, h->mmap_size, MS_SYNC); }
+
+/* Open a FROZEN (sealed) file read-only: O_RDONLY + PROT_READ. BitSet's bit
+ * ops are already lock-free (CAS-based), so a read-only view needs no extra
+ * synchronization -- it simply must never be written, which PROT_READ
+ * enforces at the MMU. Works from a read-only fd / read-only filesystem and
+ * can be shared PROT_READ across any number of processes (same architecture;
+ * the native magic rejects a wrong-endian file at validation). */
+static BsHandle *bs_open_readonly(const char *path, char *errbuf) {
+    if (errbuf) errbuf[0] = '\0';
+    int fd = open(path, O_RDONLY|O_NOFOLLOW|O_CLOEXEC);
+    if (fd < 0) { BS_ERR("open %s: %s", path, strerror(errno)); return NULL; }
+    struct stat st;
+    if (fstat(fd, &st) < 0) { BS_ERR("fstat %s: %s", path, strerror(errno)); close(fd); return NULL; }
+    if ((uint64_t)st.st_size < sizeof(BsHeader)) { BS_ERR("%s: file too small", path); close(fd); return NULL; }
+    size_t ms = (size_t)st.st_size;
+    void *base = mmap(NULL, ms, PROT_READ, MAP_SHARED, fd, 0);
+    close(fd);   /* the mapping keeps the file; a read-only view needs no fd (no msync/ftruncate) */
+    if (base == MAP_FAILED) { BS_ERR("mmap %s: %s", path, strerror(errno)); return NULL; }
+    if (!bs_validate_header((BsHeader *)base, (uint64_t)st.st_size)) {
+        BS_ERR("%s: invalid bitset file", path); munmap(base, ms); return NULL;
+    }
+    if (!((BsHeader *)base)->sealed) {
+        BS_ERR("%s is not frozen: call ->freeze on the producer before opening read-only", path);
+        munmap(base, ms); return NULL;
+    }
+    BsHandle *h = bs_setup(base, ms, path, -1);   /* munmaps on OOM */
+    if (!h) { BS_ERR("out of memory"); return NULL; }
+    h->readonly = 1;
+    return h;
+}
+
+/* Seal a bitset: make it permanently immutable so it can be shipped and
+ * opened read-only. BitSet has no rwlock -- its per-bit ops are already
+ * lock-free CAS/atomics -- so there is no writer lock to take here; publish
+ * the seal with a release store, then flush it (file/memfd-backed).
+ * Afterwards every mutator croaks and a read-write reopen is refused. */
+static int bs_freeze(BsHandle *h) {
+    __atomic_store_n(&h->hdr->sealed, 1, __ATOMIC_RELEASE);
+    if (h->path || h->backing_fd >= 0) return bs_msync(h);  /* durability for file/memfd-backed */
+    return 0;   /* anonymous: the seal lives in shared memory (visible to forks); nothing to flush */
+}
 
 #endif /* BITSET_H */

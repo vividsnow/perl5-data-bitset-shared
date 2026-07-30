@@ -48,6 +48,13 @@ Data::BitSet::Shared - Shared-memory fixed-size bitset for Linux
     say "$bs";                # "10101000..." (stringification)
     my @bits = $bs->set_bits; # (0, 2, 4)
 
+    # freeze and ship: query it read-only (lock-free) on other machines
+    my $shared = Data::BitSet::Shared->new("/tmp/seen.bitset", 256);
+    $shared->set(10);
+    $shared->freeze;
+    my $ro = Data::BitSet::Shared->new_readonly("/tmp/seen.bitset");
+    $ro->test(10);
+
 =head1 DESCRIPTION
 
 Fixed-size bitset in shared memory. CAS-based atomic per-bit
@@ -67,6 +74,10 @@ B<Linux-only>. Requires 64-bit Perl.
     my $bs = Data::BitSet::Shared->new(undef, $capacity);    # anonymous (fork-inherited)
     my $bs = Data::BitSet::Shared->new_memfd($name, $cap);   # memfd (fd-passable)
     my $bs = Data::BitSet::Shared->new_from_fd($fd);         # attach to existing fd
+    my $ro = Data::BitSet::Shared->new_readonly($path);      # frozen file, read-only
+
+C<new_readonly> opens a B<frozen> file read-only for lock-free querying (see
+L</"FROZEN (READ-ONLY) MODE">).
 
 =head2 Bit Operations
 
@@ -123,7 +134,50 @@ Single-process (1M ops, x86_64 Linux, Perl 5.40, 64K-bit set):
 =head1 STATS
 
 C<stats()> returns a hashref with keys: C<capacity>, C<count>,
-C<sets>, C<clears>, C<toggles>, C<mmap_size>.
+C<sets>, C<clears>, C<toggles>, C<mmap_size>, C<frozen> (1 if the bitset has
+been sealed by C<freeze>, else 0), and C<readonly> (1 if this handle is a
+read-only view -- from C<new_readonly>, or the handle that called C<freeze> --
+else 0).
+
+=head1 FROZEN (READ-ONLY) MODE
+
+A file-backed bitset can be B<frozen> and then shipped to other machines,
+where consumers open it B<read-only> and query it with B<no locking at all>
+(bit operations are already lock-free CAS/atomics, frozen or not; freezing
+only guarantees the mapping is never mutated again).
+
+    # producer: build, freeze, ship the file
+    my $bs = Data::BitSet::Shared->new("/tmp/seen.bitset", 1_000_000);
+    $bs->set($_) for @known_ids;
+    $bs->freeze;                 # seal: now immutable, and $bs itself is read-only
+    # ... copy /tmp/seen.bitset to another host ...
+
+    # consumer (any process, same architecture): read-only, lock-free
+    my $ro = Data::BitSet::Shared->new_readonly("/tmp/seen.bitset");
+    $ro->test($_) for @queries;
+
+C<freeze> marks the bitset B<permanently immutable> (there is no unfreeze --
+rebuild the file to change it) and flushes the seal to disk. A frozen bitset
+rejects every mutator (C<set>, C<clear>, C<toggle>, C<fill>, C<zero>) with a
+croak, and a read-write reopen (C<< new($path, ...) >> or C<new_from_fd>) of a
+sealed file is B<refused> -- so a shipped artifact can never be silently
+mutated out from under its readers.
+
+C<new_readonly($path)> maps the file C<O_RDONLY> / C<PROT_READ> and B<requires
+it to be frozen> (it croaks on a file that was never C<freeze>d). Every query
+method (C<test>, C<count>, C<capacity>, C<any>, C<none>, C<first_set>,
+C<first_clear>, C<to_string>, C<stats>, stringification) reads the mapping
+directly with no lock, so a read-only view works from a read-only file
+descriptor or a read-only filesystem, and any number of processes can share
+one C<PROT_READ> mapping. C<frozen> and C<readonly> report the two states;
+C<sync> is a silent no-op on a read-only handle.
+
+B<Portability.> The on-disk format is native binary (native-endian 64-bit
+words), so a frozen file may be copied only between machines of the B<same
+architecture>; a wrong-endian file is rejected at open by the magic check.
+B<Copy the file to each consumer> -- do not share one file over a network
+filesystem: C<MAP_SHARED> coherency across NFS clients is not guaranteed, and
+the "no live writer" contract assumes a static copy. Linux-only; 64-bit Perl.
 
 =head1 SECURITY
 
