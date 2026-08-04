@@ -293,6 +293,23 @@ static BsHandle *bs_create(const char *path, uint64_t capacity, mode_t mode, cha
         if (base == MAP_FAILED) { BS_ERR("mmap: %s", strerror(errno)); flock(fd, LOCK_UN); close(fd); return NULL; }
         if (!is_new) {
             if (!bs_validate_header((BsHeader *)base, (uint64_t)st.st_size)) {
+                /* Recover an abandoned mid-init file: a creator killed between the
+                 * ftruncate and bs_init_header below leaves a full-size, all-zero
+                 * (magic==0) file that would otherwise brick every future open of
+                 * this path.  Re-initialize it, but ONLY when it is exactly our
+                 * size, still uninitialized (magic==0), and owned by us -- a valid
+                 * or foreign file fails this and still errors, never clobbered. */
+                if (((BsHeader *)base)->magic == 0 && (uint64_t)st.st_size == total
+                    && st.st_uid == geteuid()) {
+                    if (fchmod(fd, mode) < 0) {
+                        BS_ERR("%s: fchmod: %s", path, strerror(errno));
+                        munmap(base, map_size); flock(fd, LOCK_UN); close(fd); return NULL;
+                    }
+                    memset(base, 0, map_size);   /* start from a provably empty structure */
+                    bs_init_header(base, total, capacity, nw);
+                    flock(fd, LOCK_UN); close(fd);
+                    return bs_setup(base, map_size, path, -1);
+                }
                 BS_ERR("invalid bitset file"); munmap(base, map_size); flock(fd, LOCK_UN); close(fd); return NULL;
             }
             if (((BsHeader *)base)->sealed) {

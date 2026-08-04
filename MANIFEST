@@ -23,6 +23,7 @@ t/03-edge-cases.t
 t/pod_synopsis.t
 t/version_check.t
 t/04-frozen.t
+t/05-recover.t
 xt/abi_skew.t
 xt/asan.t
 xt/class_pv_magic.t
