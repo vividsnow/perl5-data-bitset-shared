@@ -58,4 +58,14 @@ unlink $p;
     undef $r; unlink $p;
 }
 
+# 5. A magic==0 file of the right size but with NON-zero data (not a fresh
+#    ftruncate) is NOT recovered -- recovery only re-inits a provably-empty file.
+{
+    open my $f, '>', $p or die $!; truncate $f, $total or die $!; close $f;
+    open $f, '+<', $p or die $!; seek $f, $total - 1, 0; print $f "\x01"; close $f;
+    my $b = eval { Data::BitSet::Shared->new($p, $cap) };
+    ok(!$b, "new() refuses a magic==0 file that is not all-zero (no clobber of real data)");
+    undef $b; unlink $p;
+}
+
 done_testing;

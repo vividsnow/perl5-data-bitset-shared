@@ -56,7 +56,7 @@ new(class, path, capacity, ...)
     mode_t mode = (items > 3 && (SvGETMAGIC(ST(3)), SvOK(ST(3)))) ? (mode_t)SvUV(ST(3)) : 0600;
     const char *p = (SvGETMAGIC(path), SvOK(path)) ? SvPV_nolen(path) : NULL;
     BsHandle *h = bs_create(p, capacity, mode, errbuf);
-    if (!h) croak("Data::BitSet::Shared->new: %s", errbuf);
+    if (!h) croak("Data::BitSet::Shared->new: %s", errbuf[0] ? errbuf : "out of memory");
     /* Re-read the class PV at the point of use: xsubpp captured it in INPUT,
      * before the argument magic above ran, and that magic can realloc/free
      * the PV, leaving MAKE_OBJ to bless into a stale (or reused) buffer.
@@ -79,7 +79,7 @@ new_memfd(class, name, capacity)
      * i.e. before SvUV(ST(2)) get-magic, which could realloc/free that PV. */
     const char *nm = (SvGETMAGIC(name), SvOK(name)) ? SvPV_nolen(name) : NULL;
     BsHandle *h = bs_create_memfd(nm, capacity, errbuf);
-    if (!h) croak("Data::BitSet::Shared->new_memfd: %s", errbuf);
+    if (!h) croak("Data::BitSet::Shared->new_memfd: %s", errbuf[0] ? errbuf : "out of memory");
     /* Re-read the class PV at the point of use (see new() above): capacity's
      * INPUT conversion and the name magic both ran after xsubpp captured
      * class. */
@@ -96,7 +96,7 @@ new_from_fd(class, fd)
     char errbuf[BS_ERR_BUFLEN];
   CODE:
     BsHandle *h = bs_open_fd(fd, errbuf);
-    if (!h) croak("Data::BitSet::Shared->new_from_fd: %s", errbuf);
+    if (!h) croak("Data::BitSet::Shared->new_from_fd: %s", errbuf[0] ? errbuf : "out of memory");
     /* Re-read the class PV at the point of use (see new() above): fd's INPUT
      * conversion ran get-magic after xsubpp captured class. */
     class = SvPV_nolen(ST(0));
