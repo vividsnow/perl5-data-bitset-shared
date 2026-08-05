@@ -320,7 +320,6 @@ static BsHandle *bs_create(const char *path, uint64_t capacity, mode_t mode, cha
                         BS_ERR("%s: fchmod: %s", path, strerror(errno));
                         munmap(base, map_size); flock(fd, LOCK_UN); close(fd); return NULL;
                     }
-                    memset(base, 0, map_size);   /* start from a provably empty structure */
                     bs_init_header(base, total, capacity, nw);
                     flock(fd, LOCK_UN); close(fd);
                     return bs_setup(base, map_size, path, -1);
