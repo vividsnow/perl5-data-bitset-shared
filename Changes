@@ -1,9 +1,17 @@
 Revision history for Data::BitSet::Shared
 
-0.05  2026-07-23
+0.06  2026-08-05
+    - xt/valgrind.t: run the real interpreter, not a wrapper script. Under a
+      shim perl (plenv, perlbrew) valgrind traced the shell and never saw the
+      XS, so the test passed regardless of what the module did.
+    - An interrupted create no longer leaves a file that can never be opened
+      again: such a file is re-initialized when it is provably empty and owned
+      by us, and is otherwise reported as incomplete rather than just invalid.
     - Add a frozen read-only mode: freeze() seals a file-backed bitset
       immutable; new_readonly() opens it O_RDONLY / PROT_READ and queries
       it lock-free.
+
+0.05  2026-07-23
     - Derive the data pointer from the validated layout.
     - Resolve argument magic before capturing the path string.
     - Re-read the class name at the point of use in the constructors, so a
